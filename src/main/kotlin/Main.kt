@@ -3,6 +3,8 @@ import java.net.URI
 import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 import org.w3c.dom.Element
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * Пользовательские настройки CLI-приложения.
@@ -133,19 +135,151 @@ fun printConfig(config: AppConfig) {
 }
 
 /**
+ * Выполняет GET-запрос к репозиторию.
+ */
+fun getText(address: String): String {
+    val connection = URI(address).toURL()
+        .openConnection() as HttpURLConnection
+
+    try {
+        connection.requestMethod = "GET"
+        connection.connectTimeout = 10000
+        connection.readTimeout = 10000
+        connection.setRequestProperty("User-Agent", "variant6-kotlin")
+
+        val status = connection.responseCode
+        require(status == 200) {
+            "Ошибка HTTP: $status"
+        }
+
+        return connection.inputStream.bufferedReader().use {
+            it.readText()
+        }
+    } finally {
+        connection.disconnect()
+    }
+}
+
+/**
+ * Получает последнюю версию пакета с crates.io.
+ */
+fun readLatestVersion(
+    packageName: String,
+    repository: String
+): String {
+    val json = getText("$repository/api/v1/crates/$packageName")
+
+    val version = Regex(
+        "\"max_version\"\\s*:\\s*\"([^\"]+)\""
+    ).find(json)?.groupValues?.get(1)
+
+    return requireNotNull(version) {
+        "Не удалось найти версию пакета."
+    }
+}
+
+/**
+ * Получает прямые зависимости пакета.
+ */
+fun readRemoteDependencies(
+    packageName: String,
+    version: String,
+    repository: String
+): List<String> {
+    val address =
+        "$repository/api/v1/crates/$packageName/$version/dependencies"
+
+    val json = getText(address)
+
+    return Regex("\"crate_id\"\\s*:\\s*\"([^\"]+)\"")
+        .findAll(json)
+        .map { it.groupValues[1] }
+        .distinct()
+        .toList()
+}
+
+/**
+ * Читает зависимости из локального Cargo.toml для тестирования.
+ */
+fun readTestDependencies(filePath: String): List<String> {
+    val lines = File(filePath).readLines()
+    val sections = setOf(
+        "[dependencies]",
+        "[dev-dependencies]",
+        "[build-dependencies]"
+    )
+
+    val dependencies = linkedSetOf<String>()
+    var active = false
+
+    for (line in lines) {
+        val value = line.substringBefore("#").trim()
+
+        if (value.startsWith("[") && value.endsWith("]")) {
+            active = value in sections
+        } else if (active && value.contains("=")) {
+            val name = value.substringBefore("=").trim()
+
+            if (name.matches(Regex("[A-Za-z0-9_-]+"))) {
+                dependencies.add(name)
+            }
+        }
+    }
+
+    return dependencies.toList()
+}
+
+/**
+ * Получает зависимости в зависимости от режима приложения.
+ */
+fun getDependencies(config: AppConfig): List<String> {
+    if (config.testMode) {
+        return readTestDependencies(config.repository)
+    }
+
+    val version = readLatestVersion(
+        config.packageName,
+        config.repository
+    )
+
+    return readRemoteDependencies(
+        config.packageName,
+        version,
+        config.repository
+    )
+}
+
+/**
+ * Выводит прямые зависимости пакета.
+ */
+fun printDependencies(dependencies: List<String>) {
+    println("Прямые зависимости:")
+
+    if (dependencies.isEmpty()) {
+        println("Зависимости не найдены.")
+        return
+    }
+
+    dependencies.forEach {
+        println("- $it")
+    }
+}
+
+/**
  * Запускает CLI-приложение и сообщает об ошибках конфигурации.
  *
  * @param args аргументы командной строки; первый аргумент — путь к XML
  */
 fun main(args: Array<String>) {
     val configPath = args.firstOrNull() ?: "config.xml"
+
     try {
         val config = loadConfig(configPath)
         printConfig(config)
-        println("Этап 1 завершён: настройки успешно загружены.")
+        val dependencies = getDependencies(config)
+        printDependencies(dependencies)
     } catch (exception: Exception) {
-        System.err.println("Ошибка: ${exception.message ?: "не удалось прочитать конфигурацию."}")
-        System.err.println("Использование: ./run.sh [путь-к-config.xml]")
+        System.err.println("Ошибка: ${exception.message}")
         kotlin.system.exitProcess(1)
     }
 }
