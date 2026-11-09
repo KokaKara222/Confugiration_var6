@@ -148,7 +148,7 @@ fun getText(address: String): String {
         connection.setRequestProperty("User-Agent", "variant6-kotlin")
 
         val status = connection.responseCode
-        require(status == 200) {
+        require(status == HttpURLConnection.HTTP_OK) {
             "Ошибка HTTP: $status"
         }
 
