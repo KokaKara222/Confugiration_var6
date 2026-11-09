@@ -119,6 +119,3 @@ echo "Проверены ошибки конфигурации, без сете�
 if [[ "$passed" -ne "$total" ]]; then
     exit 1
 fi
-BASH
-
-bash check_errors.sh
